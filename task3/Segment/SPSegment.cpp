@@ -1,0 +1,139 @@
+#include "SPSegment.hpp"
+#include "SlottedPage.hpp"
+#include <vector>
+
+SPSegment::SPSegment(BufferManager *bufferManager, SSegment *sSegment, uint16_t segmentId){
+	this->bufferManager = bufferManager;
+	this->sSegment = sSegment;
+	this->segmentId = segmentId;
+	relation = &sSegment->getTable(segmentId);
+	numPages = relation->numPages;
+}
+//page_ignore will be ignored when looking for a page to insert
+//to avoid deadlock problem
+TID SPSegment::insert(const Record& r, uint64_t page_ignore){
+	uint16_t slotId;
+	uint64_t pageId;
+
+	unsigned len = r.getLen();
+	const char* data = r.getData();
+
+//	uint64_t numPages = relation.numPages;
+//indicate whether an available page is found, create a new one if not found
+	bool flag = false;
+	for(uint64_t i = 0; i < numPages; i++){
+		if(i == page_ignore)
+			continue;
+		pageId = i;
+		uint64_t page = STID(i);
+		bufferManager->upgrade(STID(page_ignore));
+
+		BufferFrame &frame = bufferManager->fixPage(page, true);
+		SlottedPage *slottedPage = reinterpret_cast<SlottedPage*>(frame.getData());
+		if(slottedPage->enoughSpace(len)){
+			slotId = slottedPage->insert(len, data);
+			bufferManager->unfixPage(frame, true);
+			flag = true;
+			break;
+		}
+		bufferManager->unfixPage(frame, false);
+	}
+
+//The page is created the first time
+	if(!flag){
+		bufferManager->upgrade(STID(page_ignore));
+		pageId = numPages;
+		uint64_t page = STID(numPages);
+
+		BufferFrame &frame = bufferManager->fixPage(page, true);
+
+		SlottedPage *slottedPage = reinterpret_cast<SlottedPage*>(frame.getData());
+//initialize header
+		slottedPage->initialize();
+
+		slotId = slottedPage->insert(len, data);
+		bufferManager->unfixPage(frame, true);
+		numPages++;
+	}
+	TID tid(pageId, slotId);
+	return tid;
+}
+//TODO redirection of remove is not implemented
+bool SPSegment::remove(TID tid){
+	uint64_t pageId = tid.getPageId();
+	uint16_t slotId = tid.getSlotId();
+	uint64_t page = STID(pageId);
+
+	BufferFrame &frame = bufferManager->fixPage(page, true);
+	SlottedPage *slottedPage = reinterpret_cast<SlottedPage*>(frame.getData());
+	
+	bool flag = slottedPage->remove(slotId);
+	if(flag){
+		bufferManager->unfixPage(frame, true);
+		return true;
+	}else{
+		bufferManager->unfixPage(frame, false);
+		return false;
+	}
+}
+
+Record SPSegment::lookup(TID tid){
+	uint64_t pageId = tid.getPageId();
+	uint16_t slotId = tid.getSlotId();
+	uint64_t page = STID(pageId);
+
+	BufferFrame &frame = bufferManager->fixPage(page, false);
+
+	SlottedPage *slottedPage = reinterpret_cast<SlottedPage*>(frame.getData());
+	Data data = slottedPage->getData(slotId);
+//if the data is in this page
+//else the data is redirected to another page
+	if(data.data != nullptr){
+		uint16_t length = slottedPage->getLength(slotId);
+
+		bufferManager->unfixPage(frame, false);
+		return Record(length, data.data);
+	}else{
+		bufferManager->unfixPage(frame, false);
+
+		uint64_t repage = STID(data.tid.getPageId());
+
+		uint16_t reslotId = data.tid.getSlotId();
+
+		BufferFrame &reframe = bufferManager->fixPage(repage, false);
+
+		SlottedPage *reslottedPage = reinterpret_cast<SlottedPage*>(reframe.getData());
+		Data redata = reslottedPage->getData(reslotId);
+		uint16_t relength = reslottedPage->getLength(reslotId);
+		bufferManager->unfixPage(reframe, false);
+
+		return Record(relength, redata.data);
+	}
+}
+
+bool SPSegment::update(TID tid, const Record& r){
+	uint64_t pageId = tid.getPageId();
+	uint16_t slotId = tid.getSlotId();
+	uint64_t page = STID(pageId);
+
+	BufferFrame &frame = bufferManager->fixPage(page, false);
+	SlottedPage *slottedPage = reinterpret_cast<SlottedPage*>(frame.getData());
+	bool flag = slottedPage->update(slotId, r.getLen(), r.getData());
+	if(flag){
+		bufferManager->unfixPage(frame, true);
+		return true;
+	}
+//if update is not successfull, insert the record to another page and make an indirection
+
+//TODO when there is already an indirection
+//current implementation is to leave the indirection, and make a new indirection which is a waste
+	TID retid = insert(r, pageId);
+	slottedPage->redirect(slotId, retid);
+	bufferManager->unfixPage(frame, true);
+	return true;
+}
+
+uint64_t SPSegment::STID(uint64_t pageId){
+	uint64_t segmentId_ = segmentId;
+	return (segmentId_ << 48) | (pageId << 16);
+}
