@@ -1,5 +1,37 @@
 #include "Operator.hpp"
 
+bool Register::operator==(const Register& other) const{
+	switch(type){
+		case Types::Tag::Integer:
+			return i == other.i;
+		case Types::Tag::Char:
+			return s == other.s;	
+	}
+	return false;
+}
+size_t Register::hashCode() const{
+	switch(type){
+		case Types::Tag::Integer:
+			return i;
+		case Types::Tag::Char:
+			return std::hash<std::string>()(s);
+	}
+	return 0;
+}
+
+std::ostream& operator<<(std::ostream& os, const Register& r){
+	switch(r.getType()){
+		case Types::Tag::Integer:
+			os << r.i;
+			break;
+		case Types::Tag::Char:
+			os << r.s;
+			break;
+	}
+	return os;	
+}
+
+
 TableScan::TableScan(const std::string& name){
 	this->tableName = name;
 }
@@ -22,6 +54,7 @@ void TableScan::open(){
 bool TableScan::next(){
 	if(currentSlot < slotCount){
 		flag = true;
+		//clear previous tuple
 		return true;
 	}else{
 		currentPage++;
@@ -36,6 +69,12 @@ bool TableScan::next(){
 }
 
 void TableScan::close(){
+	for(const std::vector<Register*> &tuple : tuples){
+		for(const Register* r : tuple){
+			delete r;
+		}
+	}
+
 	delete sSegment;
 	delete bufferManager;
 	delete sPSegment;	
@@ -48,13 +87,11 @@ std::vector<Register*> TableScan::getOutput(){
 	Record record = sPSegment->lookup(TID(currentPage, currentSlot));
 	currentSlot++;
 	const char* data = record.getData();
-
-	std::vector<Register *> tuple;
-
+	std::vector<Register*> tuple;
 	int i = 0;
 	int id = 0;
 //iterate all attributes of a tuple and add to tuple
-	for(Schema::Relation::Attribute &attribute : relation->attributes){
+	for(const Schema::Relation::Attribute &attribute : relation->attributes){
 		Register *r;
 		if(attribute.type == Types::Tag::Integer){
 			int d = Basic::toInt32(data[i], data[i+1], data[i+2], data[i+3]);
@@ -63,21 +100,20 @@ std::vector<Register*> TableScan::getOutput(){
 		}else{
 //When attribute is Char, read length characters
 			unsigned length = attribute.len;
-			std::string d;
-			for(unsigned j = 0; j < length; j++){
-				d += data[j+i];
-			}
+			std::string d(data, length);
 			i += length;
 			r = new Register(d, id);
 		}
 		id++;
 		tuple.push_back(r);
-	}
+	}	
+	tuples.push_back(tuple);
+
 	flag = false;
 	return tuple;
 }
 
-Print::Print(Operator *input){
+Print::Print(Operator *input, std::ostream &os) : output(os){
 	this->input = input;
 }
 
@@ -89,38 +125,27 @@ bool Print::next(){
 	while(input->next()){
 		std::vector<Register *> tuple = input->getOutput();
 		for(Register* r : tuple){
-			if(r->getType() == Types::Tag::Integer){
-				std::cout << r->getInteger()<< " ";
-				
-			}else{
-				std::cout << r->getString();
-			}
+			output << *r << " ";
 		}
-		std::cout << std::endl;
+		output << '\n';
 	}
+	return false;
 }
 
 void Print::close(){
 	input->close();
 }
 
-std::vector<Register*> Print::getOutput(){
-	std::vector<Register*> r;
-	return r;
-}
-
 Selection::Selection(Operator *input, int id, int constant){
 	this->input = input;
 	this->id = id;
-	iconstant = constant;
-	type = Types::Tag::Integer;
+	this->constant = new Register(constant, 0);
 }
 
 Selection::Selection(Operator *input, int id, std::string constant){
 	this->input = input;
 	this->id = id;
-	sconstant = constant;
-	type = Types::Tag::Char;
+	this->constant = new Register(constant, 0);
 }
 
 void Selection::open(){
@@ -130,18 +155,10 @@ void Selection::open(){
 bool Selection::next(){
 	while(input->next()){
 		std::vector<Register* > r = input->getOutput();
-		if(type == Types::Tag::Integer){
-			if(r[id]->getInteger() == iconstant){
-				tuple = r;
-				flag = true;
-				return true;
-			}
-		}else{
-			if(r[id]->getString() == sconstant){
-				tuple = r;
-				flag = true;
-				return true;
-			}
+		if(*r[id] == *constant){
+			tuple = r;
+			flag = true;
+			return true;
 		}
 	}
 	
@@ -169,22 +186,21 @@ void HashJoin::open(){
 	left->open();
 	while(left->next()){
 		std::vector<Register*> tuple = left->getOutput();
-		
 		index.insert({*tuple[lid], tuple});
 	}
-	left->close();
 
 	right->open();
 }
 
 bool HashJoin::next(){
+//If previous results are not consumed
 	if(!tuples.empty())
 		return true;
 	
 	bool flag = false;
 	while(right->next()){
 		std::vector<Register*> r = right->getOutput();
-
+//For each tuple from right table, there might be multiple results, store all of them
 		auto range = index.equal_range(*r[rid]);
 		for(auto it = range.first; it != range.second; it++){
 			flag = true;
@@ -205,11 +221,36 @@ bool HashJoin::next(){
 }
 
 void HashJoin::close(){
+	left->close();
 	right->close();
 }
 
 std::vector<Register*> HashJoin::getOutput(){
 	std::vector<Register*> tuple = tuples.front();
+
 	tuples.pop();
 	return tuple;
+}
+
+void Projection::open(){
+	input->open();
+}
+
+bool Projection::next(){
+	if(input->next())
+		return true;
+	return false;
+}
+
+void Projection::close(){
+	input->close();
+}
+
+std::vector<Register*> Projection::getOutput(){
+	std::vector<Register*> tuple = input->getOutput();
+	std::vector<Register*> newtuple;
+	for(int id : ids){
+		newtuple.push_back(tuple[id]);
+	}
+	return newtuple;
 }

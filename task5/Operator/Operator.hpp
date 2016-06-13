@@ -2,6 +2,7 @@
 #include <vector>
 #include <unordered_map>
 #include <queue>
+#include <iostream>
 #include "../Segment/SPSegment.hpp"
 
 class Register{
@@ -17,41 +18,30 @@ public:
 		this->id = id;
 		type = Types::Tag::Integer;
 	}
-
-	int getInteger(){
+	~Register(){}
+	int getInteger() const{
 		return i;
 	}
 
-	std::string getString(){
+	std::string getString() const{
 		return s;
 	}
 	
-	Types::Tag getType(){
+	Types::Tag getType() const{
 		return type;
 	}
 	
-	bool operator==(const Register& other) const{
-		switch(type){
-			case Types::Tag::Integer:
-				return i == other.i;
-			case Types::Tag::Char:
-				return s == other.s;	
-		}
-	}
-	size_t hashCode() const{
-		switch(type){
-			case Types::Tag::Integer:
-				return i;
-			case Types::Tag::Char:
-				return std::hash<std::string>()(s);
-		}
-	}
+	bool operator==(const Register& other) const;
+	size_t hashCode() const;
+
+	friend std::ostream& operator<<(std::ostream& os, const Register& r);
 private:
 	std::string s;
 	int i;
 	int id;
 	Types::Tag type;
 };
+
 
 namespace std{
 	template<>
@@ -67,7 +57,7 @@ public:
 	virtual void open() = 0;
 	virtual bool next() = 0;
 	virtual void close() = 0;
-	virtual std::vector<Register*> getOutput() = 0;
+	virtual std::vector<Register*> getOutput(){};
 	virtual ~Operator(){}
 };
 
@@ -90,23 +80,20 @@ private:
 	uint16_t slotCount;
 	uint16_t currentSlot = 0;
 	bool flag = false;
+
+	std::vector<std::vector<Register*> > tuples;
 };
 
 
 class Print : public Operator{
 public:
-	Print(Operator *input);
+	Print(Operator *input, std::ostream &os);
 	virtual void open();
 	virtual bool next();
 	virtual void close();
-	virtual std::vector<Register*> getOutput();
 private:
 	Operator *input;
-};
-
-class Projection : public Operator{
-public:
-	Projection(Operator *input, std::vector<int> ids);
+	std::ostream &output;
 };
 
 class Selection : public Operator{
@@ -120,8 +107,7 @@ public:
 private:
 	int id;
 	Operator *input;
-	int iconstant;
-	std::string sconstant;
+	Register *constant;
 	Types::Tag type;
 	std::vector<Register*> tuple;
 	bool flag =false;
@@ -146,13 +132,16 @@ private:
 
 class Projection : public Operator{
 public:
-	Projection(std::vector<int> ids){
+	Projection(Operator *input, std::vector<int> ids){
+		this->input = input;
 		this->ids = ids;
 	}
 	virtual void open();
 	virtual bool next();
 	virtual void close();
+	virtual std::vector<Register*> getOutput();
 private:
 	Operator *input;
 	std::vector<int> ids;
 };
+
